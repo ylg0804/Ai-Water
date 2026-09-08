@@ -151,7 +151,7 @@ public class WaterflowOnnxService {
      * 与 end2end_onnx.py 的差异仅为通用模型约定：640×640（非 384×512）、居中灰边 114（非右下角零填充）、
      * 保持 BGR（模型图内自行翻转 RGB）。
      */
-    float[] letterboxBgr(BufferedImage src) {
+    public static float[] letterboxBgr(BufferedImage src) {
         int w = src.getWidth(), h = src.getHeight();
         float scale = Math.min((float) INPUT_SIZE / w, (float) INPUT_SIZE / h);
         int newW = Math.max(1, Math.round(w * scale));
@@ -196,7 +196,7 @@ public class WaterflowOnnxService {
      * 采样公式 srcPos = (dstPos + 0.5) * (srcSize / dstSize) - 0.5，
      * 越界坐标钳到边缘（对应 OpenCV 的 sx&lt;0 / sx&gt;=width-1 处理），结果四舍五入到 uint8。
      */
-    private byte[] resizeLinear(byte[] src, int w, int h, int dstW, int dstH) {
+    private static byte[] resizeLinear(byte[] src, int w, int h, int dstW, int dstH) {
         float[] hPass = new float[dstW * h * 3];
         double fx = (double) w / dstW;
         for (int y = 0; y < h; y++) {
@@ -259,8 +259,8 @@ public class WaterflowOnnxService {
      */
     WaterflowResult decode(float[][][] out, Map<String, Float> kv) {
         if (out == null || out.length < 2 || out[0] == null || out[0].length < 7
-                || out[0][0] == null || out[0][0].length == 0) {
-            throw new IllegalArgumentException("模型输出形状异常，期望 N>=2、channels>=7、anchors>0");
+                || out[0][0] == null || out[0][0].length < 3) {
+            throw new IllegalArgumentException("模型输出形状异常，期望 N>=2、channels>=7、anchors>=3");
         }
         int n = out.length;
         int channels = out[0].length;
@@ -284,7 +284,8 @@ public class WaterflowOnnxService {
 
         // 各帧水面框
         for (int f = 0; f < n; f++) {
-            int a = argmax(out[f][4 + CLASS_WATER_SURFACE], anchors);
+            // 交付模型的编码契约固定使用 anchor 0，不能用最高分框替代。
+            int a = 0;
             float[] bbox = toXyxy(out[f], a);
             float conf = out[f][4 + CLASS_WATER_SURFACE][a];
             detections.add(new Detection("water_surface", bbox, conf, f));
@@ -296,13 +297,13 @@ public class WaterflowOnnxService {
         float level = HydraulicAlarmUtil.waterLevelMeters(cy, kv);
 
         // 流速 / 流量：第 0 帧类别 1 / 2 框的 x2 通道承载数值
-        int va = argmax(out[0][4 + CLASS_VELOCITY], anchors);
+        int va = 1;
         float[] velocityBox = toXyxy(out[0], va);
         float velocity = velocityBox[2] / VALUE_SCALE;
         detections.add(new Detection("velocity_ms", velocityBox,
                 out[0][4 + CLASS_VELOCITY][va], 0));
 
-        int da = argmax(out[0][4 + CLASS_DISCHARGE], anchors);
+        int da = 2;
         float[] dischargeBox = toXyxy(out[0], da);
         float discharge = dischargeBox[2] / VALUE_SCALE;
         detections.add(new Detection("discharge_m3s", dischargeBox,

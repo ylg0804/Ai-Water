@@ -1,0 +1,5 @@
+{
+  "properties": [
+    {"name":"ezviz.devices[].status","type":"java.lang.Integer","defaultValue":1,"description":"设备状态，1=在线/启用，0=停用。"}
+  ]
+}

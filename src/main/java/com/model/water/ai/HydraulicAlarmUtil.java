@@ -62,6 +62,14 @@ public final class HydraulicAlarmUtil {
         return v == null ? def : v;
     }
 
+    private static int positiveCount(Map<String, Float> kv, String key, int def) {
+        float value = get(kv, key, def);
+        if (!Float.isFinite(value) || value < 1f || value != Math.rint(value)) {
+            throw new IllegalArgumentException(key + " 必须是正整数");
+        }
+        return (int) value;
+    }
+
     // ------------------------------------------------------------------
     // 渠道水满
     // ------------------------------------------------------------------
@@ -110,7 +118,10 @@ public final class HydraulicAlarmUtil {
 
         public ChannelFullAlarm(Map<String, Float> kv) {
             this.fullLevel = get(kv, "channel_full_level", Float.NaN);
-            this.consecNeed = (int) get(kv, "full_consec_count", 3f);
+            this.consecNeed = positiveCount(kv, "full_consec_count", 3);
+            if (!Float.isNaN(fullLevel) && (!Float.isFinite(fullLevel) || fullLevel < 0f)) {
+                throw new IllegalArgumentException("channel_full_level 必须是非负有限数");
+            }
         }
 
         /** @return true 表示触发水满告警；未配置 channel_full_level 时恒 false */
@@ -187,7 +198,13 @@ public final class HydraulicAlarmUtil {
             this.maxMean = get(kv, "occ_max_mean", 240f);
             this.minStd = get(kv, "occ_min_std", 10f);
             this.minLapVar = get(kv, "occ_min_lapvar", 20f);
-            this.consecNeed = (int) get(kv, "occ_consec_frames", 5f);
+            this.consecNeed = positiveCount(kv, "occ_consec_frames", 5);
+            if (!Float.isFinite(minMean) || !Float.isFinite(maxMean)
+                    || minMean < 0f || maxMean > 255f || minMean >= maxMean
+                    || !Float.isFinite(minStd) || minStd < 0f
+                    || !Float.isFinite(minLapVar) || minLapVar < 0f) {
+                throw new IllegalArgumentException("遮挡阈值范围无效");
+            }
         }
 
         /** 单帧是否异常。 */
@@ -225,8 +242,12 @@ public final class HydraulicAlarmUtil {
         private int consec = 0;
 
         public DebrisAlarm(Map<String, Float> kv) {
-            this.minCount = (int) get(kv, "debris_min_count", 1f);
-            this.consecNeed = (int) get(kv, "debris_consec_frames", 3f);
+            this.minCount = positiveCount(kv, "debris_min_count", 1);
+            this.consecNeed = positiveCount(kv, "debris_consec_frames", 3);
+            float confidence = get(kv, "debris_min_conf", 0.5f);
+            if (!Float.isFinite(confidence) || confidence < 0f || confidence > 1f) {
+                throw new IllegalArgumentException("debris_min_conf 必须在 [0,1] 范围内");
+            }
         }
 
         /**
