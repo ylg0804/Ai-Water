@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createRealtimeChannel, type RealtimeSocket } from '../../../src/services/platform/realtime'
 
 function fixture(url = 'https://water.example/#/dashboard') {
@@ -12,6 +12,7 @@ function fixture(url = 'https://water.example/#/dashboard') {
   const channel = createRealtimeChannel({ pageUrl: new URL(url), createSocket, onState, onMessage })
   return { channel, sockets, createSocket, onState, onMessage }
 }
+afterEach(() => vi.useRealTimers())
 
 describe('realtime lifecycle', () => {
   it.each([
@@ -33,6 +34,45 @@ describe('realtime lifecycle', () => {
     f.sockets[0].onopen?.({} as Event)
     f.channel.connect()
     expect(f.createSocket).toHaveBeenCalledTimes(1)
+  })
+  it('leaves a silent connection attempt after a bounded wait and permits another attempt', () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    f.channel.connect()
+    const old = f.sockets[0], lateOpen = old.onopen, lateMessage = old.onmessage
+
+    vi.advanceTimersByTime(15_000)
+    expect(f.onState).toHaveBeenLastCalledWith('polling')
+    expect(old.close).toHaveBeenCalledOnce()
+
+    f.channel.connect()
+    expect(f.createSocket).toHaveBeenCalledTimes(2)
+    lateOpen?.({} as Event)
+    lateMessage?.({ data: 'stale' } as MessageEvent)
+    expect(f.onState).toHaveBeenLastCalledWith('connecting')
+    expect(f.onMessage).not.toHaveBeenCalled()
+  })
+  it('keeps an opened connection active beyond the connection deadline', () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    f.channel.connect()
+    f.sockets[0].onopen?.({} as Event)
+
+    vi.advanceTimersByTime(15_000)
+    expect(f.onState).toHaveBeenLastCalledWith('connected')
+    expect(f.sockets[0].close).not.toHaveBeenCalled()
+    f.channel.stop()
+  })
+  it('does not fire the connection timeout after stopping', () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    f.channel.connect()
+    f.channel.stop()
+
+    vi.advanceTimersByTime(15_000)
+    expect(f.onState).toHaveBeenCalledTimes(2)
+    expect(f.onState).toHaveBeenLastCalledWith('stopped')
+    expect(f.sockets[0].close).toHaveBeenCalledOnce()
   })
   it.each(['onerror', 'onclose'] as const)('falls back to polling on %s and releases handlers before retry', handler => {
     const f = fixture()

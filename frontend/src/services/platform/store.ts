@@ -48,6 +48,11 @@ export function createPlatform(options: PlatformOptions = {}) {
   let channel: RealtimeChannel | null = null
   let timer: ReturnType<typeof setInterval> | undefined
   let inFlight: Promise<void> | null = null
+  const recoveryWaiters = new Set<() => void>()
+  function wakeRecoveryWaiters() {
+    for (const wake of recoveryWaiters) wake()
+    recoveryWaiters.clear()
+  }
   function assertCurrent(epoch: number) {
     if (epoch !== generation) throw new Error('会话已变更，请重新查询。')
   }
@@ -59,6 +64,7 @@ export function createPlatform(options: PlatformOptions = {}) {
     stateRevision++
     inFlight = null
     state.loading = false
+    wakeRecoveryWaiters()
     return stateRevision
   }
   function assertCurrentRead(epoch: number, revision: number) {
@@ -246,22 +252,49 @@ export function createPlatform(options: PlatformOptions = {}) {
       if (active) return
       active = true
       const epoch = generation
+      let recoveryPending = false
+      let recoveryVersion = 0
       channel = realtimeFactory({
-        onState: value => { if (active && epoch === generation) state.realtime = value },
+        onState: value => {
+          if (!active || epoch !== generation) return
+          state.realtime = value
+          if (value === 'polling') {
+            recoveryPending = true
+            recoveryVersion++
+          } else if (value === 'connected' && recoveryPending) {
+            recoveryPending = false
+            const version = recoveryVersion
+            const pending = inFlight
+            void (async () => {
+              if (pending) {
+                let wake!: () => void
+                const invalidated = new Promise<void>(resolve => { wake = resolve; recoveryWaiters.add(wake) })
+                try { await Promise.race([pending.catch(() => {}), invalidated]) }
+                finally { recoveryWaiters.delete(wake) }
+              }
+              if (active && epoch === generation && version === recoveryVersion && state.realtime === 'connected') {
+                await api.refreshMeasurements()
+              }
+            })().catch(() => {})
+          }
+        },
         onMessage: payload => { if (active && epoch === generation) api.receiveRealtime(payload) },
       })
       void api.refreshMeasurements().catch(() => {})
       channel.connect()
-  timer = setInterval(() => {
-    state.devices.forEach(updateOnline)
-    if (state.realtime !== 'connected') void api.refreshMeasurements().catch(() => {})
-    channel?.connect()
-  }, 30_000)
+      timer = setInterval(() => {
+        state.devices.forEach(updateOnline)
+        if (state.realtime !== 'connected' || state.connection === 'error' || state.storageWarning) {
+          void api.refreshMeasurements().catch(() => {})
+        }
+        channel?.connect()
+      }, 30_000)
     },
     pauseUpdates() {
       active = false
       generation++
       inFlight = null
+      wakeRecoveryWaiters()
       if (timer !== undefined) clearInterval(timer)
       timer = undefined
       channel?.stop()

@@ -17,8 +17,14 @@ export interface RealtimeChannel { connect(): void; stop(): void }
 
 export function createRealtimeChannel(options: RealtimeOptions): RealtimeChannel {
   let socket: RealtimeSocket | null = null
+  let connectTimer: ReturnType<typeof setTimeout> | undefined
   let stopped = false
+  function clearConnectTimer() {
+    if (connectTimer !== undefined) clearTimeout(connectTimer)
+    connectTimer = undefined
+  }
   function release(close: boolean) {
+    clearConnectTimer()
     const previous = socket
     socket = null
     if (!previous) return
@@ -36,10 +42,11 @@ export function createRealtimeChannel(options: RealtimeOptions): RealtimeChannel
         const current = (options.createSocket ?? (address => new WebSocket(address)))(url.href)
         socket = current
         const valid = () => !stopped && socket === current
-        current.onopen = () => { if (valid()) options.onState('connected') }
+        current.onopen = () => { if (valid()) { clearConnectTimer(); options.onState('connected') } }
         current.onmessage = event => { if (valid()) options.onMessage(String(event.data)) }
         current.onerror = () => { if (valid()) { release(true); options.onState('polling') } }
         current.onclose = () => { if (valid()) { release(false); options.onState('polling') } }
+        connectTimer = setTimeout(() => { if (valid()) { release(true); options.onState('polling') } }, 15_000)
       } catch { release(true); options.onState('polling') }
     },
     stop() {

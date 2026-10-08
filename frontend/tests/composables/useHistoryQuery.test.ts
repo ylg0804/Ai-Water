@@ -130,6 +130,28 @@ describe('useHistoryQuery', () => {
     expect(new TextDecoder().decode(bytes.slice(3))).toBe('serial,water\r\n"CAM,7",0\r\nCAM8,2\r\n')
   })
 
+  it('exports small metric values as plain decimals without changing other CSV cells', async () => {
+    const download = vi.fn()
+    const header = 'serial,measured_at,water_level,velocity,discharge\r\n'
+    const first = new Blob(['\uFEFF', header, '"7.09315E-4,""CAM""","2026-09-18 14:21:00","0.9490","7.09315E-4","0.0027"\r\n'])
+    const second = new Blob([header, '"CAM8","2026-09-18 14:22:00","1.2E-3","0","1.3e-6"\r\n'])
+    const state = useHistoryQuery({
+      devices: ref([device('7'), device('8')]),
+      history: vi.fn().mockResolvedValue([measurement('row', 1)]),
+      exportHistory: vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second),
+      download,
+    })
+    await state.initialQuery
+    await state.exportRows()
+
+    const bytes = new Uint8Array(await (download.mock.calls[0][0] as Blob).arrayBuffer())
+    expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
+    expect(new TextDecoder().decode(bytes.slice(3))).toBe(
+      header + '"7.09315E-4,""CAM""","2026-09-18 14:21:00","0.9490","0.000709315","0.0027"\r\n'
+      + '"CAM8","2026-09-18 14:22:00","0.0012","0","0.0000013"\r\n',
+    )
+  })
+
   it('rejects inconsistent CSV headers without downloading a file', async () => {
     const download = vi.fn()
     const state = useHistoryQuery({
@@ -175,8 +197,8 @@ describe('useHistoryQuery', () => {
   it('revokes each created object URL on disposal', async () => {
     const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:history')
     const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
-    const anchor = { href: '', download: '', click: vi.fn() }
-    vi.stubGlobal('document', { createElement: vi.fn(() => anchor) })
+    const anchor = { href: '', download: '', click: vi.fn(), remove: vi.fn() }
+    vi.stubGlobal('document', { createElement: vi.fn(() => anchor), body: { appendChild: vi.fn() } })
     const state = useHistoryQuery({
       devices: ref([device('7')]),
       history: vi.fn().mockResolvedValue([measurement('row', 1)]),
@@ -189,12 +211,13 @@ describe('useHistoryQuery', () => {
     expect(revoke).toHaveBeenCalledWith('blob:history')
   })
 
-  it('releases a download object URL after the browser receives the click', async () => {
+  it('clicks an attached download link and keeps its object URL alive while the download starts', async () => {
     vi.useFakeTimers()
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:history')
     const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
-    const anchor = { href: '', download: '', click: vi.fn() }
-    vi.stubGlobal('document', { createElement: vi.fn(() => anchor) })
+    const appendChild = vi.fn()
+    const anchor = { href: '', download: '', click: vi.fn(() => expect(appendChild).toHaveBeenCalledWith(anchor)), remove: vi.fn() }
+    vi.stubGlobal('document', { createElement: vi.fn(() => anchor), body: { appendChild } })
     const state = useHistoryQuery({
       devices: ref([device('7')]),
       history: vi.fn().mockResolvedValue([measurement('row', 1)]),
@@ -203,9 +226,34 @@ describe('useHistoryQuery', () => {
     await state.initialQuery
     await state.exportRows()
 
+    expect(anchor.click).toHaveBeenCalledOnce()
+    expect(anchor.remove).toHaveBeenCalledOnce()
     expect(revoke).not.toHaveBeenCalled()
-    await vi.runOnlyPendingTimersAsync()
+    await vi.advanceTimersByTimeAsync(999)
+    expect(revoke).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
     expect(revoke).toHaveBeenCalledWith('blob:history')
     state.dispose()
+  })
+
+  it('releases the object URL and reports the error when the browser rejects the download click', async () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:history')
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    const anchor = { href: '', download: '', click: vi.fn(() => { throw new Error('浏览器拒绝下载') }), remove: vi.fn() }
+    vi.stubGlobal('document', { createElement: vi.fn(() => anchor), body: { appendChild: vi.fn() } })
+    const state = useHistoryQuery({
+      devices: ref([device('7')]),
+      history: vi.fn().mockResolvedValue([measurement('row', 1)]),
+      exportHistory: vi.fn().mockResolvedValue(new Blob(['id\r\n7\r\n'])),
+    })
+    await state.initialQuery
+    await state.exportRows()
+
+    expect(state.error.value).toBe('浏览器拒绝下载')
+    expect(anchor.remove).toHaveBeenCalledOnce()
+    expect(revoke).toHaveBeenCalledOnce()
+    expect(revoke).toHaveBeenCalledWith('blob:history')
+    state.dispose()
+    expect(revoke).toHaveBeenCalledOnce()
   })
 })

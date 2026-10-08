@@ -23,11 +23,12 @@ onBeforeUnmount(live.dispose)
       <span class="stream-label">摄像头直播<span v-if="live.quality"> · {{ live.quality }}</span></span>
     </div>
     <div class="video-stage" :aria-busy="live.loading">
-      <video ref="video" v-show="enabled && !live.error" controls muted playsinline preload="none" :aria-label="`${deviceName || '监测设备'}摄像头直播`" @loadedmetadata="live.nativeReady" @error="live.nativeError" @playing="live.onPlaying" @pause="live.onPaused" />
+      <video ref="video" v-show="enabled && !live.error" controls muted playsinline preload="none" :aria-label="`${deviceName || '监测设备'}摄像头直播`" @loadeddata="live.nativeReady" @error="live.nativeError" @playing="live.onPlaying" @pause="live.onPaused" />
       <div v-if="!enabled || live.loading || live.error" class="video-empty" :role="live.error ? 'alert' : 'status'">
         <RefreshCw v-if="live.loading" :size="30" class="loading-icon" /><Video v-else :size="30" />
-        <strong>{{ !device ? '请选择监测设备' : !enabled ? '设备已停用' : live.loading ? '正在连接摄像头' : '暂时无法显示画面' }}</strong>
-        <span>{{ !device ? '选择设备后读取对应的直播画面' : !enabled ? '在设备管理中启用后继续查看' : live.loading ? '正在连接视频流' : live.error }}</span>
+        <strong>{{ !device ? '请选择监测设备' : !enabled ? '设备已停用' : live.playbackBlocked ? '等待点击播放' : live.loading ? '正在连接摄像头' : '暂时无法显示画面' }}</strong>
+        <span>{{ !device ? '选择设备后读取对应的直播画面' : !enabled ? '在设备管理中启用后继续查看' : live.playbackBlocked ? '浏览器已阻止自动播放，请点击下方按钮。' : live.loading ? '正在连接视频流' : live.error }}</span>
+        <el-button v-if="live.loading && live.playbackBlocked && enabled" size="small" @click="live.resumePlayback()">播放视频</el-button>
         <el-button v-if="live.error && enabled" size="small" @click="live.loadStream()">重新连接</el-button>
       </div>
       <div v-if="live.playing && !live.error" class="live-tag"><i /> LIVE <span>{{ device?.serial }}</span></div>

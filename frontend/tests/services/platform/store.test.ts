@@ -378,6 +378,180 @@ describe('platform store', () => {
     api.stop()
     expect(api.state.devices).toEqual([])
   })
+  it('catches up missed measurements and alarms after realtime reconnects without refetching on first connection', async () => {
+    const gateway = fixture()
+    let callbacks!: RealtimeOptions
+    const api = createPlatform({ gateway, clock: now, realtimeFactory: options => {
+      callbacks = options
+      return { connect: vi.fn(), stop: vi.fn() }
+    } })
+    try {
+      api.start()
+      await api.refreshMeasurements()
+      callbacks.onState('connected')
+      expect(gateway.listDevices).toHaveBeenCalledTimes(1)
+      expect(api.latestForDevice('1')?.waterLevel).toBe(1.26)
+      expect(api.state.alarms.map(row => row.id)).toEqual(['3'])
+
+      gateway.getLatestMeasurement.mockResolvedValueOnce({ ...measurement('1', '2026-09-09T02:00:20Z'), waterLevel: 2.5 })
+      gateway.listAlarms.mockResolvedValueOnce([{ ...alarm, id: '4' }])
+      callbacks.onState('polling')
+      callbacks.onState('connecting')
+      callbacks.onState('connected')
+
+      await vi.waitFor(() => expect(api.latestForDevice('1')?.waterLevel).toBe(2.5))
+      expect(api.state.alarms.map(row => row.id)).toEqual(['4'])
+      expect(gateway.listDevices).toHaveBeenCalledTimes(2)
+    } finally { api.stop() }
+  })
+  it('starts a fresh catch-up read after a pending polling read finishes', async () => {
+    const gateway = fixture()
+    let callbacks!: RealtimeOptions
+    const api = createPlatform({ gateway, clock: now, realtimeFactory: options => {
+      callbacks = options
+      return { connect: vi.fn(), stop: vi.fn() }
+    } })
+    try {
+      api.start()
+      await api.refreshMeasurements()
+      callbacks.onState('connected')
+      callbacks.onState('polling')
+
+      const oldSample = deferred<Measurement>()
+      gateway.getLatestMeasurement.mockReturnValueOnce(oldSample.promise)
+        .mockResolvedValueOnce({ ...measurement('1', '2026-09-09T02:00:20Z'), waterLevel: 2.5 })
+      gateway.listAlarms.mockResolvedValueOnce([{ ...alarm }]).mockResolvedValueOnce([{ ...alarm, id: '4' }])
+      const pollingRead = api.refreshMeasurements()
+      await vi.waitFor(() => expect(gateway.getLatestMeasurement).toHaveBeenCalledTimes(2))
+
+      callbacks.onState('connecting')
+      callbacks.onState('connected')
+      oldSample.resolve(measurement())
+      await pollingRead
+
+      await vi.waitFor(() => expect(api.latestForDevice('1')?.waterLevel).toBe(2.5))
+      expect(api.state.alarms.map(row => row.id)).toEqual(['4'])
+      expect(gateway.listDevices).toHaveBeenCalledTimes(3)
+    } finally { api.stop() }
+  })
+  it('retries a failed reconnect catch-up while the socket stays connected, then stops retrying', async () => {
+    vi.useFakeTimers()
+    const gateway = fixture()
+    let callbacks!: RealtimeOptions
+    const api = createPlatform({ gateway, clock: now, realtimeFactory: options => {
+      callbacks = options
+      return { connect: vi.fn(), stop: vi.fn() }
+    } })
+    try {
+      api.start()
+      await api.refreshMeasurements()
+      callbacks.onState('connected')
+      gateway.listDevices.mockRejectedValueOnce(new Error('temporary device error'))
+      gateway.getLatestMeasurement.mockResolvedValueOnce({ ...measurement('1', '2026-09-09T02:00:20Z'), waterLevel: 2.5 })
+      gateway.listAlarms.mockResolvedValueOnce([{ ...alarm, id: '4' }])
+
+      callbacks.onState('polling')
+      callbacks.onState('connecting')
+      callbacks.onState('connected')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(api.state.connection).toBe('error')
+      expect(api.latestForDevice('1')?.waterLevel).toBe(1.26)
+
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(api.latestForDevice('1')?.waterLevel).toBe(2.5)
+      expect(api.state.alarms.map(row => row.id)).toEqual(['4'])
+      expect(gateway.listDevices).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(gateway.listDevices).toHaveBeenCalledTimes(3)
+    } finally { api.stop() }
+  })
+  it('retries a partial alarm catch-up failure until the missed alarm is loaded', async () => {
+    vi.useFakeTimers()
+    const gateway = fixture()
+    let callbacks!: RealtimeOptions
+    const api = createPlatform({ gateway, clock: now, realtimeFactory: options => {
+      callbacks = options
+      return { connect: vi.fn(), stop: vi.fn() }
+    } })
+    try {
+      api.start()
+      await api.refreshMeasurements()
+      callbacks.onState('connected')
+      gateway.listAlarms.mockRejectedValueOnce(new Error('temporary alarm error'))
+      callbacks.onState('polling')
+      callbacks.onState('connecting')
+      callbacks.onState('connected')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(api.state.storageWarning).toContain('temporary alarm error')
+      expect(api.state.alarms.map(row => row.id)).toEqual(['3'])
+
+      gateway.listAlarms.mockResolvedValueOnce([{ ...alarm, id: '4' }])
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(api.state.alarms.map(row => row.id)).toEqual(['4'])
+      expect(api.state.storageWarning).toBe('')
+      expect(gateway.listDevices).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(gateway.listDevices).toHaveBeenCalledTimes(3)
+    } finally { api.stop() }
+  })
+  it('starts catch-up after a mutation invalidates a polling read that never settles', async () => {
+    const gateway = fixture()
+    let callbacks!: RealtimeOptions
+    const api = createPlatform({ gateway, clock: now, realtimeFactory: options => {
+      callbacks = options
+      return { connect: vi.fn(), stop: vi.fn() }
+    } })
+    const oldSample = deferred<Measurement>()
+    let pollingRead: Promise<void> | undefined
+    try {
+      api.start()
+      await api.refreshMeasurements()
+      callbacks.onState('connected')
+      callbacks.onState('polling')
+      gateway.getLatestMeasurement.mockReturnValueOnce(oldSample.promise)
+        .mockResolvedValueOnce({ ...measurement('1', '2026-09-09T02:00:20Z'), waterLevel: 2.5 })
+      pollingRead = api.refreshMeasurements()
+      await vi.waitFor(() => expect(gateway.getLatestMeasurement).toHaveBeenCalledTimes(2))
+      callbacks.onState('connecting')
+      callbacks.onState('connected')
+
+      await api.saveDevice({ ...device(), name: 'Renamed camera' }, '1')
+      await vi.waitFor(() => expect(api.latestForDevice('1')?.waterLevel).toBe(2.5))
+      expect(gateway.listDevices).toHaveBeenCalledTimes(4)
+    } finally {
+      oldSample.resolve(measurement())
+      await pollingRead
+      api.stop()
+    }
+  })
+  it.each(['pauseUpdates', 'stop'] as const)('does not run a queued reconnect catch-up after %s', async action => {
+    const gateway = fixture()
+    let callbacks!: RealtimeOptions
+    const api = createPlatform({ gateway, clock: now, realtimeFactory: options => {
+      callbacks = options
+      return { connect: vi.fn(), stop: vi.fn() }
+    } })
+    try {
+      api.start()
+      await api.refreshMeasurements()
+      callbacks.onState('connected')
+      callbacks.onState('polling')
+
+      const oldSample = deferred<Measurement>()
+      gateway.getLatestMeasurement.mockReturnValueOnce(oldSample.promise)
+      const pollingRead = api.refreshMeasurements()
+      await vi.waitFor(() => expect(gateway.getLatestMeasurement).toHaveBeenCalledTimes(2))
+      callbacks.onState('connecting')
+      callbacks.onState('connected')
+
+      api[action]()
+      oldSample.resolve(measurement())
+      await pollingRead
+      await Promise.resolve()
+      expect(gateway.listDevices).toHaveBeenCalledTimes(2)
+      expect(api.state.devices).toHaveLength(action === 'stop' ? 0 : 1)
+    } finally { api.stop() }
+  })
   it('expires sampling freshness while realtime stays connected without polling', async () => {
     vi.useFakeTimers()
     let current = new Date('2026-09-09T02:00:30Z')

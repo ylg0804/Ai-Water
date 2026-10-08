@@ -48,6 +48,59 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
+function plainDecimal(cell: string): string {
+  const quoted = cell.startsWith('"') && cell.endsWith('"')
+  const value = quoted ? cell.slice(1, -1) : cell
+  const match = /^([+-]?)(\d+(?:\.\d*)?|\.\d+)[eE]([+-]?\d+)$/.exec(value)
+  if (!match) return cell
+  const exponent = Number(match[3])
+  if (!Number.isInteger(exponent) || Math.abs(exponent) > 1_000) return cell
+  const point = match[2].indexOf('.') < 0 ? match[2].length : match[2].indexOf('.')
+  const digits = match[2].replace('.', '')
+  const shifted = point + exponent
+  const decimal = shifted <= 0 ? `0.${'0'.repeat(-shifted)}${digits}`
+    : shifted >= digits.length ? `${digits}${'0'.repeat(shifted - digits.length)}`
+      : `${digits.slice(0, shifted)}.${digits.slice(shifted)}`
+  return quoted ? `"${match[1]}${decimal}"` : `${match[1]}${decimal}`
+}
+
+function plainMetricDecimals(body: Uint8Array, header: Uint8Array): Uint8Array {
+  const columns = new TextDecoder().decode(comparableHeader(header)).split(',')
+  const metricColumns = new Set(columns.flatMap((name, index) =>
+    ['water_level', 'velocity', 'discharge'].includes(name) ? [index] : []))
+  if (!metricColumns.size) return body
+
+  const source = new TextDecoder().decode(body)
+  let output = ''
+  let start = 0
+  let column = 0
+  let insideQuotes = false
+  for (let index = 0; index < source.length; index++) {
+    const char = source[index]
+    if (char === '"') {
+      if (insideQuotes && source[index + 1] === '"') index++
+      else insideQuotes = !insideQuotes
+    } else if (!insideQuotes && (char === ',' || char === '\r' || char === '\n')) {
+      const cell = source.slice(start, index)
+      output += metricColumns.has(column) ? plainDecimal(cell) : cell
+      if (char === ',') {
+        output += char
+        column++
+      } else {
+        output += char === '\r' && source[index + 1] === '\n' ? '\r\n' : char
+        if (char === '\r' && source[index + 1] === '\n') index++
+        column = 0
+      }
+      start = index + 1
+    }
+  }
+  if (start < source.length) {
+    const cell = source.slice(start)
+    output += metricColumns.has(column) ? plainDecimal(cell) : cell
+  }
+  return new TextEncoder().encode(output)
+}
+
 async function mergeCsv(files: Blob[]): Promise<Blob> {
   if (!files.length) throw new Error('没有可导出的设备，请重新查询。')
   const parts = (await Promise.all(files.map(async file => firstLine(stripBom(new Uint8Array(await file.arrayBuffer()))))))
@@ -59,8 +112,9 @@ async function mergeCsv(files: Blob[]): Promise<Blob> {
   const lineBreak = new Uint8Array([13, 10])
   const content: BlobPart[] = [new Uint8Array([0xef, 0xbb, 0xbf]), header]
   for (const part of parts) {
-    content.push(part.body)
-    if (part.body.length && part.body[part.body.length - 1] !== 10) content.push(lineBreak)
+    const body = plainMetricDecimals(part.body, header)
+    content.push(body)
+    if (body.length && body[body.length - 1] !== 10) content.push(lineBreak)
   }
   return new Blob(content, { type: 'text/csv;charset=utf-8' })
 }
@@ -169,8 +223,11 @@ export function useHistoryQuery(options: HistoryQueryOptions) {
     const anchor = document.createElement('a')
     anchor.href = url
     anchor.download = filename
-    anchor.click()
-    objectUrlTimers.set(url, setTimeout(() => releaseObjectUrl(url), 0))
+    document.body.appendChild(anchor)
+    try { anchor.click() }
+    catch (cause) { releaseObjectUrl(url); throw cause }
+    finally { anchor.remove() }
+    objectUrlTimers.set(url, setTimeout(() => releaseObjectUrl(url), 1_000))
   }
 
   async function exportRows(): Promise<void> {
