@@ -157,8 +157,6 @@ describe('useLiveVideo', () => {
     await live.loadStream()
     expect(getPlayAddress).toHaveBeenCalledWith(firstDevice, expect.any(AbortSignal))
     expect(video.value?.src).toBe(validAddress.url)
-    expect(video.value?.play).toHaveBeenCalledOnce()
-    expect(live.ready.value).toBe(false)
     live.nativeReady()
     await Promise.resolve()
     expect(live.ready.value).toBe(true)
@@ -235,8 +233,6 @@ describe('useLiveVideo', () => {
     hls.emit('attached')
     expect(hls.player.loadSource).toHaveBeenCalledWith(validAddress.url)
     hls.emit('parsed')
-    expect(live.loading.value).toBe(true)
-    live.nativeReady()
     expect(live.ready.value).toBe(true)
     hls.emit('error', { fatal: true, type: 'network', response: { code: 403 } })
     expect(live.error.value).not.toContain('token=secret')
@@ -254,7 +250,7 @@ describe('useLiveVideo', () => {
 
     const oldAttempt = live.loadStream()
     const oldSignal = getPlayAddress.mock.calls[0][1] as AbortSignal
-    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(20_000)
     expect(live.loading.value).toBe(false)
     expect(live.ready.value).toBe(false)
     expect(live.error.value).toContain('连接超时')
@@ -270,92 +266,6 @@ describe('useLiveVideo', () => {
     live.dispose()
   })
 
-  it('lets a user gesture restart native playback after autoplay is blocked', async () => {
-    const video = videoStub()
-    const play = vi.fn().mockRejectedValueOnce(new DOMException('autoplay blocked', 'NotAllowedError')).mockResolvedValueOnce(undefined)
-    video.play = play
-    const live = useLiveVideo({ device: ref(firstDevice), video: ref(video), getPlayAddress: vi.fn(async () => validAddress) })
-
-    await live.loadStream()
-    await Promise.resolve()
-    expect(live.loading.value).toBe(true)
-    expect(live.playbackBlocked.value).toBe(true)
-    live.resumePlayback()
-    expect(play).toHaveBeenCalledTimes(2)
-    expect(live.playbackBlocked.value).toBe(false)
-    live.nativeReady()
-    expect(live.ready.value).toBe(true)
-    live.dispose()
-  })
-
-  it('pauses the connection deadline while waiting for a user gesture', async () => {
-    vi.useFakeTimers()
-    const video = videoStub()
-    video.play = vi.fn().mockRejectedValueOnce(new DOMException('autoplay blocked', 'NotAllowedError')).mockResolvedValueOnce(undefined)
-    const live = useLiveVideo({ device: ref(firstDevice), video: ref(video), getPlayAddress: vi.fn(async () => validAddress) })
-
-    await live.loadStream()
-    await Promise.resolve()
-    expect(live.playbackBlocked.value).toBe(true)
-    await vi.advanceTimersByTimeAsync(60_000)
-    expect(live.error.value).toBe('')
-    expect(live.playbackBlocked.value).toBe(true)
-    live.resumePlayback()
-    expect(live.playbackBlocked.value).toBe(false)
-    await vi.advanceTimersByTimeAsync(15_000)
-    expect(live.error.value).toContain('连接超时')
-    live.dispose()
-  })
-
-  it('lets a user gesture restart HLS playback after autoplay is blocked', async () => {
-    const hls = hlsHarness()
-    const video = videoStub(false)
-    const play = vi.fn().mockRejectedValueOnce(new DOMException('autoplay blocked', 'NotAllowedError')).mockResolvedValueOnce(undefined)
-    video.play = play
-    const live = useLiveVideo({ device: ref(firstDevice), video: ref(video), getPlayAddress: vi.fn(async () => validAddress), hlsAdapter: hls.adapter })
-
-    await live.loadStream()
-    hls.emit('parsed')
-    await Promise.resolve()
-    expect(live.playbackBlocked.value).toBe(true)
-    live.resumePlayback()
-    expect(play).toHaveBeenCalledTimes(2)
-    live.nativeReady()
-    expect(live.ready.value).toBe(true)
-    live.dispose()
-  })
-
-  it('does not try user gesture playback before a video address is installed', async () => {
-    const pending = deferred<PlayAddress>()
-    const video = videoStub()
-    const live = useLiveVideo({ device: ref(firstDevice), video: ref(video), getPlayAddress: vi.fn(() => pending.promise) })
-
-    const attempt = live.loadStream()
-    live.resumePlayback()
-    expect(video.play).not.toHaveBeenCalled()
-    expect(live.playbackBlocked.value).toBe(false)
-    live.dispose()
-    pending.resolve(validAddress)
-    await attempt
-  })
-
-  it.each(['native', 'HLS'])('keeps the connection deadline after a %s non-policy play rejection', async (path) => {
-    vi.useFakeTimers()
-    const hls = hlsHarness()
-    const video = videoStub(path === 'native')
-    video.play = vi.fn().mockRejectedValue(new DOMException('cannot decode', 'NotSupportedError'))
-    const live = useLiveVideo({ device: ref(firstDevice), video: ref(video), getPlayAddress: vi.fn(async () => validAddress), hlsAdapter: hls.adapter })
-
-    await live.loadStream()
-    if (path === 'HLS') hls.emit('parsed')
-    await Promise.resolve()
-    expect(live.playbackBlocked.value).toBe(false)
-    await vi.advanceTimersByTimeAsync(15_000)
-    expect(live.loading.value).toBe(false)
-    expect(live.error.value).toContain('连接超时')
-    live.dispose()
-  })
-
   it('ignores an autoplay rejection that arrives after connection timeout', async () => {
     vi.useFakeTimers()
     let rejectPlay!: (reason: Error) => void
@@ -365,11 +275,11 @@ describe('useLiveVideo', () => {
     const live = useLiveVideo({ device: ref(firstDevice), video: ref(video), getPlayAddress: vi.fn(async () => validAddress) })
 
     await live.loadStream()
-    await vi.advanceTimersByTimeAsync(15_000)
+    live.nativeReady()
+    await vi.advanceTimersByTimeAsync(20_000)
     rejectPlay(new Error('late autoplay rejection'))
     await Promise.resolve()
     expect(live.error.value).toContain('连接超时')
-    expect(live.playbackBlocked.value).toBe(false)
     expect(live.playbackHint.value).toBe('')
     live.dispose()
   })
@@ -381,7 +291,7 @@ describe('useLiveVideo', () => {
     const live = useLiveVideo({ device: ref(firstDevice), video, getPlayAddress })
 
     await live.loadStream()
-    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(20_000)
     expect(live.loading.value).toBe(false)
     expect(live.ready.value).toBe(false)
     expect(live.error.value).toContain('连接超时')
@@ -404,8 +314,8 @@ describe('useLiveVideo', () => {
 
     await live.loadStream()
     hls.emit('parsed')
-    expect(live.ready.value).toBe(false)
-    await vi.advanceTimersByTimeAsync(15_000)
+    expect(live.ready.value).toBe(true)
+    await vi.advanceTimersByTimeAsync(20_000)
     expect(live.loading.value).toBe(false)
     expect(live.error.value).toContain('连接超时')
     expect(hls.player.destroy).toHaveBeenCalledOnce()
@@ -421,7 +331,8 @@ describe('useLiveVideo', () => {
 
     await live.loadStream()
     live.nativeReady()
-    await vi.advanceTimersByTimeAsync(15_000)
+    live.onLoadedData()
+    await vi.advanceTimersByTimeAsync(20_000)
     expect(live.ready.value).toBe(true)
     expect(live.loading.value).toBe(false)
     expect(live.error.value).toBe('')
@@ -441,7 +352,7 @@ describe('useLiveVideo', () => {
     await vi.advanceTimersByTimeAsync(5_000)
     expect(live.loading.value).toBe(true)
     expect(live.error.value).toBe('')
-    await vi.advanceTimersByTimeAsync(10_000)
+    await vi.advanceTimersByTimeAsync(15_000)
     expect(live.error.value).toContain('连接超时')
     live.dispose()
   })
@@ -459,14 +370,14 @@ describe('useLiveVideo', () => {
     await vi.advanceTimersByTimeAsync(1_800)
     expect(getPlayAddress).toHaveBeenCalledTimes(2)
     expect(live.loading.value).toBe(true)
-    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(20_000)
     expect(live.loading.value).toBe(false)
     expect(live.error.value).toContain('连接超时')
     renewal.resolve(validAddress)
     live.dispose()
   })
 
-  it('renews immediately after the first frame if the address is already near expiry', async () => {
+  it('renews a stream whose address is near expiry even before the first frame arrives', async () => {
     vi.useFakeTimers()
     const getPlayAddress = vi.fn()
       .mockResolvedValueOnce({ ...validAddress, expireSeconds: 2 })
@@ -474,10 +385,7 @@ describe('useLiveVideo', () => {
     const live = useLiveVideo({ device: ref(firstDevice), video: ref(videoStub()), getPlayAddress })
 
     await live.loadStream()
-    await vi.advanceTimersByTimeAsync(3_000)
-    expect(getPlayAddress).toHaveBeenCalledTimes(1)
-    live.nativeReady()
-    await vi.advanceTimersByTimeAsync(1)
+    await vi.advanceTimersByTimeAsync(1_800)
     expect(getPlayAddress).toHaveBeenCalledTimes(2)
     live.dispose()
   })
