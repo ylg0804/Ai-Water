@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS device (
   device_other_params TEXT,
   infer_interval_sec INT DEFAULT 60,
   status TINYINT DEFAULT 1,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  deleted_at DATETIME NULL
 );
 
 CREATE TABLE IF NOT EXISTS measurement (

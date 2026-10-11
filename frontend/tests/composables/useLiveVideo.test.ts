@@ -4,6 +4,11 @@ import type { Device } from '../../src/domain/models'
 import type { PlayAddress } from '../../src/services/api/video'
 import { useLiveVideo, type HlsAdapter } from '../../src/composables/useLiveVideo'
 
+vi.mock('../../src/services/api/video', async importOriginal => ({
+  ...await importOriginal<typeof import('../../src/services/api/video')>(),
+  reportPlayback: vi.fn(async () => {}),
+}))
+
 const firstDevice: Device = { id: '17', serial: 'CAM17', name: '北闸', location: '一号渠', channelNo: 2, hd: 1, deviceOtherParams: '', inferIntervalSec: 60, status: 1, online: null, createdAt: '2026-09-09T02:00:00Z' }
 const secondDevice: Device = { ...firstDevice, id: '18', serial: 'CAM18' }
 const validAddress: PlayAddress = { url: 'https://camera.example/live.m3u8?token=secret', expireSeconds: 120, quality: 'hd', protocol: 'hls' }
@@ -44,6 +49,102 @@ function hlsHarness() {
 afterEach(() => vi.useRealTimers())
 
 describe('useLiveVideo', () => {
+  it('starts detection only after playing, renews it, and stops on stalls, pauses and dispose', async () => {
+    vi.useFakeTimers()
+    const reportPlayback = vi.fn(async () => {})
+    const live = useLiveVideo({ device: ref(firstDevice), video: ref(videoStub()), getPlayAddress: vi.fn(async () => validAddress), reportPlayback })
+    await live.loadStream()
+    live.nativeReady()
+    live.onLoadedData()
+    expect(reportPlayback).not.toHaveBeenCalled()
+    live.onPlaying()
+    expect(reportPlayback).toHaveBeenLastCalledWith(firstDevice, expect.any(String), 1, true)
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(reportPlayback).toHaveBeenLastCalledWith(firstDevice, expect.any(String), 2, true)
+    live.onWaiting()
+    expect(reportPlayback).toHaveBeenLastCalledWith(firstDevice, expect.any(String), 3, false)
+    live.onPlaying()
+    live.onPaused()
+    expect(reportPlayback).toHaveBeenLastCalledWith(firstDevice, expect.any(String), 5, false)
+    live.onPlaying()
+    live.dispose()
+    expect(reportPlayback).toHaveBeenLastCalledWith(firstDevice, expect.any(String), 7, false)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(reportPlayback).toHaveBeenCalledTimes(7)
+  })
+
+  it('stops detection for the old camera when switching and waits for the new camera to play', async () => {
+    const reportPlayback = vi.fn(async () => {})
+    const device = ref(firstDevice)
+    const live = useLiveVideo({ device, video: ref(videoStub()), getPlayAddress: vi.fn(async () => validAddress), reportPlayback })
+    await live.loadStream()
+    live.onPlaying()
+    device.value = secondDevice
+    await nextTick()
+    expect(reportPlayback).toHaveBeenLastCalledWith(firstDevice, expect.any(String), 2, false)
+    live.onPlaying()
+    expect(reportPlayback).toHaveBeenLastCalledWith(secondDevice, expect.any(String), 3, true)
+    live.dispose()
+  })
+  it('does not extend the deadline when a stalled stream repeatedly emits waiting events', async () => {
+    vi.useFakeTimers()
+    const live = useLiveVideo({ device: ref(firstDevice), video: ref(videoStub()), getPlayAddress: vi.fn(async () => validAddress) })
+    await live.loadStream()
+    live.onPlaying()
+    live.onWaiting()
+    for (let i = 0; i < 4; i++) {
+      await vi.advanceTimersByTimeAsync(4_000)
+      live.onWaiting()
+    }
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(live.error.value).toContain('超时')
+    expect(live.ready.value).toBe(false)
+    live.dispose()
+  })
+  it('times out a stream that has a playlist but never produces playable frames and allows retry', async () => {
+    vi.useFakeTimers()
+    const hls = hlsHarness()
+    const live = useLiveVideo({ device: ref(firstDevice), video: ref(videoStub(false)), getPlayAddress: vi.fn(async () => validAddress), hlsAdapter: hls.adapter })
+    await live.loadStream()
+    hls.emit('parsed')
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(live.loading.value).toBe(false)
+    expect(live.error.value).toContain('并发观看限制')
+    expect(live.ready.value).toBe(false)
+    hls.emit('parsed') // Late callbacks cannot revive the failed player.
+    expect(live.ready.value).toBe(false)
+    await live.loadStream()
+    expect(live.error.value).toBe('')
+    expect(live.loading.value).toBe(true)
+    live.dispose()
+  })
+
+  it('aborts a stalled address request and ignores its late response', async () => {
+    vi.useFakeTimers()
+    const request = deferred<PlayAddress>()
+    const live = useLiveVideo({ device: ref(firstDevice), video: ref(videoStub()), getPlayAddress: () => request.promise })
+    const pending = live.loadStream()
+    await vi.advanceTimersByTimeAsync(20_000)
+    request.resolve(validAddress)
+    await pending
+    expect(live.error.value).toContain('超时')
+    expect(live.ready.value).toBe(false)
+    live.dispose()
+  })
+
+  it('cancels connection timeout after playback and reports a later stalled stream', async () => {
+    vi.useFakeTimers()
+    const live = useLiveVideo({ device: ref(firstDevice), video: ref(videoStub()), getPlayAddress: vi.fn(async () => validAddress) })
+    await live.loadStream()
+    live.onPlaying()
+    await vi.advanceTimersByTimeAsync(25_000)
+    expect(live.error.value).toBe('')
+    live.onWaiting()
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(live.error.value).toContain('超时')
+    live.dispose()
+  })
+
   it('does not request a stream for a disabled device and uses native HLS when available', async () => {
     const device = ref<Device | undefined>({ ...firstDevice, status: 0 })
     const video = ref(videoStub())

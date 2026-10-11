@@ -12,9 +12,16 @@ export interface Device {
   online: boolean | null
   runtimeError?: string
   lastSuccess?: string | null
+  failureCount?: number
+  consecutiveFailures?: number
+  lastFailureAt?: string | null
+  lastFailureReason?: string
+  runtimeEpoch?: string
+  runtimeVersion?: number
+  archived?: boolean
   createdAt: string
 }
-export type DeviceDraft = Omit<Device, 'id' | 'createdAt' | 'online' | 'runtimeError' | 'lastSuccess'>
+export type DeviceDraft = Omit<Device, 'id' | 'createdAt' | 'online' | 'runtimeError' | 'lastSuccess' | 'failureCount' | 'consecutiveFailures' | 'lastFailureAt' | 'lastFailureReason' | 'runtimeEpoch' | 'runtimeVersion' | 'archived'>
 export interface Measurement {
   id: string
   deviceId: string

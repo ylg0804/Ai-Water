@@ -3,7 +3,11 @@ import { deviceDisplayName } from '../../domain/device'
 import { apiBlob, apiRequest, type ApiRequest, type BlobRequest } from './client'
 import { asIdentifier, asList, asNullableNumber, asRecord, parseServerDate, toBackendLocalDateTime } from './contract'
 
-export interface RuntimeStatus { lastSuccess: string | null; measurement: Measurement | null; error: string }
+export interface RuntimeStatus {
+  lastSuccess: string | null; measurement: Measurement | null; error: string
+  failureCount?: number; consecutiveFailures?: number; lastFailureAt?: string | null; lastFailureReason?: string
+  runtimeEpoch?: string; runtimeVersion?: number
+}
 const runtimeFailureMessage = '设备采样异常，请联系系统管理员。'
 
 export function mapMeasurement(value: unknown, device: Device, streamTime?: unknown): Measurement {
@@ -35,11 +39,23 @@ export async function getLatestMeasurement(device: Device, request: ApiRequest =
 }
 
 export async function getRuntimeStatus(device: Device, request: ApiRequest = apiRequest): Promise<RuntimeStatus> {
-  const runtime = asRecord(await request(`/api/ezviz/measurements/latest?serial=${encodeURIComponent(device.serial)}`))
+  return mapRuntimeStatus(await request(`/api/ezviz/measurements/latest?serial=${encodeURIComponent(device.serial)}`), device)
+}
+
+export function mapRuntimeStatus(value: unknown, device: Device): RuntimeStatus {
+  const runtime = asRecord(value)
   const lastSuccess = runtime.lastSuccess == null || runtime.lastSuccess === '' ? null : parseServerDate(runtime.lastSuccess)
   const hasRuntimeError = runtime.error != null && String(runtime.error).trim() !== ''
   const measurement = lastSuccess && runtime.measurement != null ? mapMeasurement(runtime.measurement, device, lastSuccess) : null
-  return { lastSuccess, measurement, error: hasRuntimeError ? runtimeFailureMessage : '' }
+  const safeReason = (value: unknown) => typeof value === 'string' ? value.replace(/https?:\/\/[^\s]+/gi, '[视频地址]') : ''
+  const count = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0
+  return { lastSuccess, measurement, error: hasRuntimeError ? runtimeFailureMessage : '',
+    ...(runtime.runtimeEpoch != null ? { runtimeEpoch: parseServerDate(runtime.runtimeEpoch) } : {}),
+    ...(runtime.runtimeVersion != null ? { runtimeVersion: count(runtime.runtimeVersion) } : {}),
+    ...(runtime.failureCount != null ? { failureCount: count(runtime.failureCount) } : {}),
+    ...(runtime.consecutiveFailures != null ? { consecutiveFailures: count(runtime.consecutiveFailures) } : {}),
+    ...(runtime.lastFailureAt != null ? { lastFailureAt: parseServerDate(runtime.lastFailureAt) } : {}),
+    ...(runtime.lastFailureReason != null ? { lastFailureReason: safeReason(runtime.lastFailureReason) } : {}) }
 }
 
 export async function listDeviceHistory(device: Device, filter: HistoryFilter, request: ApiRequest = apiRequest, signal?: AbortSignal): Promise<Measurement[]> {

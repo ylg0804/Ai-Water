@@ -18,6 +18,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest
 class WaterflowOnnxServiceTest {
+    @org.springframework.boot.test.mock.mockito.MockBean
+    com.model.water.ezviz.FrameSource frameSource;
+    @org.springframework.boot.test.mock.mockito.MockBean
+    com.model.water.device.DeviceRepository devices;
 
     /** F98228237 摄像头的 deviceOtherParams（与交付包 params_F98228237.json 一致）。 */
     private static final String F98228237_PARAMS =

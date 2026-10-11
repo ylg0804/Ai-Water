@@ -5,7 +5,7 @@ import { validateParams } from '../../domain/deviceParameters'
 import type { PlatformState } from './types'
 import { listDevices, normalizeDeviceDraft, saveDeviceRequest, deleteDeviceRequest } from '../api/devices'
 import { listAlarms, handleAlarmRequest } from '../api/alarms'
-import { getLatestMeasurement, getRuntimeStatus, listDeviceHistory, historyParams, mapMeasurement, type RuntimeStatus } from '../api/measurements'
+import { getLatestMeasurement, getRuntimeStatus, listDeviceHistory, historyParams, mapMeasurement, mapRuntimeStatus, type RuntimeStatus } from '../api/measurements'
 import { asRecord } from '../api/contract'
 import { createRealtimeChannel, type RealtimeChannel, type RealtimeOptions } from './realtime'
 
@@ -85,7 +85,10 @@ export function createPlatform(options: PlatformOptions = {}) {
     return devices.map(device => {
       const current = state.devices.find(value => value.id === device.id)
       return current?.serial === device.serial
-        ? { ...device, online: current.online, runtimeError: current.runtimeError, lastSuccess: current.lastSuccess }
+        ? { ...device, online: current.online, runtimeError: current.runtimeError, lastSuccess: current.lastSuccess,
+            failureCount: current.failureCount, consecutiveFailures: current.consecutiveFailures,
+            lastFailureAt: current.lastFailureAt, lastFailureReason: current.lastFailureReason,
+            runtimeEpoch: current.runtimeEpoch, runtimeVersion: current.runtimeVersion }
         : device
     })
   }
@@ -106,6 +109,29 @@ export function createPlatform(options: PlatformOptions = {}) {
       throw error
     }
   }
+  function staleRuntime(runtime: RuntimeStatus, device: Device): boolean {
+    if (runtime.runtimeEpoch && device.runtimeEpoch) {
+      const epochDelta = Date.parse(runtime.runtimeEpoch) - Date.parse(device.runtimeEpoch)
+      if (epochDelta !== 0) return epochDelta < 0
+      if (runtime.runtimeVersion != null && device.runtimeVersion != null && runtime.runtimeVersion < device.runtimeVersion) return true
+    }
+    const incomingFailure = runtime.lastFailureAt ? Date.parse(runtime.lastFailureAt) : -Infinity
+    const currentFailure = device.lastFailureAt ? Date.parse(device.lastFailureAt) : -Infinity
+    return (runtime.lastSuccess ? Date.parse(runtime.lastSuccess) : -Infinity) < (device.lastSuccess ? Date.parse(device.lastSuccess) : -Infinity)
+      || incomingFailure < currentFailure
+      || (runtime.failureCount != null && device.failureCount != null && runtime.failureCount < device.failureCount)
+  }
+  function applyRuntime(runtime: RuntimeStatus, device: Device) {
+    device.runtimeEpoch = runtime.runtimeEpoch
+    device.runtimeVersion = runtime.runtimeVersion
+    device.lastSuccess = runtime.lastSuccess
+    device.failureCount = runtime.failureCount
+    device.consecutiveFailures = runtime.consecutiveFailures
+    device.lastFailureAt = runtime.lastFailureAt
+    device.lastFailureReason = runtime.lastFailureReason
+    if (runtime.measurement) mergeLatest(runtime.measurement)
+    updateOnline(device)
+  }
   async function deviceLatest(device: Device, epoch: number, revision: number) {
     const [latest, runtime] = await Promise.allSettled([
       gateway.getLatestMeasurement(device),
@@ -118,15 +144,12 @@ export function createPlatform(options: PlatformOptions = {}) {
     if (latest.status === 'fulfilled') { if (latest.value) mergeLatest(latest.value) }
     else errors.push(`测量结果获取失败：${message(latest.reason)}`)
     if (runtime.status === 'fulfilled' && runtime.value) {
-      const receivedAt = runtime.value.lastSuccess ? Date.parse(runtime.value.lastSuccess) : -Infinity
-      const currentAt = current.lastSuccess ? Date.parse(current.lastSuccess) : -Infinity
-      if (receivedAt < currentAt) {
+      if (staleRuntime(runtime.value, current)) {
         // This runtime snapshot predates the current sample, including its sampling error.
         if (errors.length) current.runtimeError = [current.runtimeError, ...errors].filter(Boolean).join('；')
         return
       }
-      current.lastSuccess = runtime.value.lastSuccess
-      if (runtime.value.measurement) mergeLatest(runtime.value.measurement)
+      applyRuntime(runtime.value, current)
       if (runtime.value.error) errors.push(runtime.value.error)
       updateOnline(current)
     } else {
@@ -233,6 +256,15 @@ export function createPlatform(options: PlatformOptions = {}) {
     receiveRealtime(payload: string) {
       try {
         const event = asRecord(JSON.parse(payload))
+        if (event.type === 'runtime') {
+          const device = state.devices.find(row => row.serial === event.serial)
+          if (!device) return
+          const runtime = mapRuntimeStatus(event.data, device)
+          if (staleRuntime(runtime, device)) return
+          applyRuntime(runtime, device)
+          device.runtimeError = runtime.error
+          return
+        }
         if (event.type === 'alarm') {
           const epoch = generation, revision = stateRevision
           void alarmsNow(epoch, revision).catch(error => { if (isCurrentRead(epoch, revision)) state.storageWarning = `告警列表获取失败：${message(error)}` })

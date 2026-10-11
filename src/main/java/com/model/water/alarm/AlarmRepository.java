@@ -27,15 +27,18 @@ public class AlarmRepository {
     public boolean createDebris(String serial, int count, float confidence, String snapshotPath) {
         return createIfNoOpen(serial, "DEBRIS", "检测到漂浮物：" + count + "个，最高置信度" + confidence, snapshotPath);
     }
-    public synchronized boolean createIfNoOpen(String serial, String type, String detail, String snapshotPath) {
+    public boolean hasOpen(String serial, String type) {
         Integer open = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM alarm a JOIN device d ON d.id=a.device_id
                 WHERE d.serial=? AND a.type=? AND a.status='OPEN'
                 """, Integer.class, serial, type);
-        if (open != null && open > 0) return false;
+        return open != null && open > 0;
+    }
+    public synchronized boolean createIfNoOpen(String serial, String type, String detail, String snapshotPath) {
+        if (hasOpen(serial, type)) return false;
         int changed = jdbc.update("""
                 INSERT INTO alarm(device_id,type,detail,snapshot_path,status)
-                SELECT id,?,?,?,'OPEN' FROM device WHERE serial=?
+                SELECT id,?,?,?,'OPEN' FROM device WHERE serial=? AND status=1 AND deleted_at IS NULL
                 """, type, detail, snapshotPath, serial);
         return changed > 0;
     }

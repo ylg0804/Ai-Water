@@ -31,3 +31,10 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Local runtime credentials and generated frontend output.
+frontend/.backend.local.properties
+frontend/.env.local
+frontend/.env.*.local
+frontend/dist/
+snapshots/

@@ -16,3 +16,7 @@ export async function login(credentials: LoginCredentials): Promise<LoginRespons
     body: JSON.stringify({ username: credentials.username.trim(), password: credentials.password }),
   })
 }
+
+export async function logout(): Promise<void> {
+  await apiRequest('/api/logout', { method: 'POST' })
+}

@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { Activity, ArrowRight, Bell, ChevronRight, Clock3, Droplets, Info, Radio, RefreshCw, Waves, Wind } from '@lucide/vue'
 import TrendChart from '../components/TrendChart.vue'
 import LiveVideo from '../components/LiveVideo.vue'
+import CalibrationHint from '../components/CalibrationHint.vue'
 import { alarmTypeMeta } from '../domain/alarmMeta'
 import { deviceDisplayName, deviceSecondaryLabel } from '../domain/device'
 import { platform } from '../services/platform/store'
@@ -105,9 +106,8 @@ onBeforeUnmount(() => { ++historyRequest; if (historyTimer) clearTimeout(history
       <div class="device-list-heading"><h2>监测设备</h2><span>{{ platform.state.ready ? platform.state.devices.length : '—' }} 个监测点</span></div>
       <button v-for="device in platform.state.devices" :key="device.id" class="device-card" :class="{ selected: selectedId === device.id }" :aria-pressed="selectedId === device.id" @click="selectedId = device.id">
         <div class="device-card-heading"><span class="device-ident"><span><strong>{{ deviceDisplayName(device) }}</strong><small v-if="deviceSecondaryLabel(device)">{{ deviceSecondaryLabel(device) }}</small></span></span><span class="connection-state" :class="{ offline: device.online !== true || !device.status }"><i class="status-dot" />{{ device.status === 0 ? '已停用' : device.online === true ? '近期采样正常' : device.online === false ? '近期无成功采样' : '尚无采样状态' }}</span></div>
-        <div class="card-measurements"><div v-for="key in metrics" :key="key"><label>{{ metricMeta[key].label }} <span>{{ metricMeta[key].unit }}</span></label><div class="metric-value"><strong>{{ formatNumber(platform.latestForDevice(device.id)?.[key]) }}</strong></div></div></div>
-        <p class="measurement-note">未标定，数值供趋势参考</p>
-        <div class="device-card-footer"><span><Clock3 :size="11" />{{ platform.latestForDevice(device.id) ? formatDate(platform.latestForDevice(device.id)!.measuredAt) : '暂无测量数据' }}</span></div>
+        <div class="card-measurements"><div v-for="key in metrics" :key="key"><label>{{ metricMeta[key].label }} <span>{{ metricMeta[key].unit }}</span></label><div class="metric-value"><strong>{{ formatNumber(platform.latestForDevice(device.id)?.[key]) }}</strong></div><CalibrationHint /></div></div>
+        <div class="device-card-footer"><span><Clock3 :size="11" />{{ platform.latestForDevice(device.id) ? formatDate(platform.latestForDevice(device.id)!.measuredAt) : '暂无测量数据' }}</span><span v-if="device.failureCount" :title="device.lastFailureReason || device.runtimeError">本次运行失败 {{ device.failureCount }} 次，连续 {{ device.consecutiveFailures ?? 0 }} 次</span><span v-if="device.runtimeError" class="device-failure">{{ device.runtimeError }}</span></div>
       </button>
       <div v-if="!platform.state.devices.length" class="panel no-devices"><Radio :size="30" /><p>{{ platform.state.loading ? '正在加载设备' : platform.state.ready ? '暂无监测设备' : '设备列表加载失败' }}</p><el-button v-if="platform.state.ready" type="primary" @click="router.push('/devices')">添加设备</el-button><el-button v-else :loading="platform.state.loading" @click="refresh()">重新加载</el-button></div>
     </section>
@@ -117,10 +117,10 @@ onBeforeUnmount(() => { ++historyRequest; if (historyTimer) clearTimeout(history
 
       <section class="panel latest-panel">
         <div class="panel-header"><div><h2>当前水情</h2><p>{{ selected?.serial ?? '未选择设备' }}</p></div></div>
-        <div class="current-measurements"><div v-for="key in metrics" :key="key" class="current-metric"><span class="metric-icon" :style="{ color: metricMeta[key].color, background: `${metricMeta[key].color}0b` }"><component :is="metricIcons[key]" :size="21" :stroke-width="1.6" /></span><div><span>{{ metricMeta[key].label }}</span><div class="metric-value"><strong>{{ formatNumber(current?.[key]) }}<small>{{ metricMeta[key].unit }}</small></strong></div></div><span class="mini-trend" :style="{ color: metricMeta[key].color }"><svg viewBox="0 0 64 24" aria-hidden="true"><path :d="sparkline(key)" fill="none" stroke="currentColor" stroke-width="1.6" /></svg></span></div></div>
-        <p class="measurement-note current-measurement-note">未标定，数值供趋势参考</p>
+        <div class="current-measurements"><div v-for="key in metrics" :key="key" class="current-metric"><span class="metric-icon" :style="{ color: metricMeta[key].color, background: `${metricMeta[key].color}0b` }"><component :is="metricIcons[key]" :size="21" :stroke-width="1.6" /></span><div><span>{{ metricMeta[key].label }}</span><div class="metric-value"><strong>{{ formatNumber(current?.[key]) }}<small>{{ metricMeta[key].unit }}</small></strong></div><CalibrationHint /></div><span class="mini-trend" :style="{ color: metricMeta[key].color }"><svg viewBox="0 0 64 24" aria-hidden="true"><path :d="sparkline(key)" fill="none" stroke="currentColor" stroke-width="1.6" /></svg></span></div></div>
         <div class="measurement-update"><span><Clock3 :size="12" />测量于 {{ formatDate(current?.measuredAt) }}</span><span>{{ realtimeLabel }}</span></div>
         <div v-if="selected?.runtimeError" class="current-info"><Info :size="13" /><span>{{ selected.runtimeError }}</span></div>
+        <div v-if="selected" class="current-info"><Info :size="13" /><span>本次服务运行失败 {{ selected.failureCount ?? 0 }} 次，连续失败 {{ selected.consecutiveFailures ?? 0 }} 次<span v-if="selected.lastFailureAt">；最近失败 {{ formatDate(selected.lastFailureAt) }}：{{ selected.lastFailureReason }}</span></span></div>
       </section>
     </div>
 
@@ -172,13 +172,11 @@ button.overview-card:hover { box-shadow: 0 4px 15px #30558510; transform: transl
 .card-measurements { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); padding: 16px 0 12px; }.card-measurements>div { border-left: 1px solid #e8eef8; padding-left: 11px; }.card-measurements>div:first-child { padding-left: 0; border: 0; }
 .card-measurements label { display: block; font-size: 11px; color: #64748b; }.card-measurements label span { font-size: 11px; color: #64748b; margin-left: 2px; }
 .card-measurements strong { display: block; margin-top: 6px; font-size: 19px; line-height: 1; color: #4b6182; font-weight: 550; font-variant-numeric: tabular-nums; }.selected .card-measurements>div:first-child strong { color: #4d83e8; }.metric-value { display: flex; align-items: flex-end; gap: 5px; }
-.measurement-note { margin: 0 0 10px; color: #64748b; font-size: 11px; line-height: 1.4; }
-.device-card-footer { display: flex; align-items: center; min-height: 31px; border-top: 1px solid #eaf0f8; color: #64748b; font-size: 11px; }.device-card-footer>span { display: flex; align-items: center; gap: 4px; }
+.device-card-footer { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 5px; min-height: 31px; padding: 7px 0; border-top: 1px solid #eaf0f8; color: #64748b; font-size: 11px; }.device-card-footer>span { display: flex; align-items: center; gap: 4px; }.device-failure { color: #b36c43; text-align: left; overflow-wrap: anywhere; }
 .no-devices { padding: 25px 5px; display: grid; justify-items: center; gap: 12px; color: #64748b; font-size: 12px; }
 .monitoring-grid { grid-column: 2; grid-row: 3; display: grid; grid-template-columns: minmax(0,1.5fr) minmax(240px,1fr); gap: 18px; align-items: stretch; }
 .latest-panel .panel-header { padding-bottom: 6px; }
 .current-measurements { padding: 0 19px; }.current-metric { display: flex; align-items: center; gap: 11px; padding: 13px 0; border-bottom: 1px solid #edf1f7; }.metric-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0; }.current-metric>div>span { color: #64748b; font-size: 11px; }.current-metric strong { display: block; margin-top: 4px; color: #445975; font-size: 22px; font-weight: 550; line-height: 1.1; font-variant-numeric: tabular-nums; }.current-metric small { font-size: 11px; font-weight: 400; color: #64748b; margin-left: 7px; }.mini-trend { width: 47px; margin-left: auto; opacity: .7; }.mini-trend svg { display: block; width: 100%; }
-.current-measurement-note { margin: 10px 19px 0; }
 .measurement-update { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 18px; font-size: 11px; color: #64748b; }.measurement-update>span { display: flex; align-items: center; gap: 4px; }.current-info { background: #fafbfd; padding: 10px 18px; border-top: 1px solid #f1f4f8; display: flex; align-items: center; gap: 5px; color: #64748b; font-size: 11px; }
 .bottom-grid { display: contents; }.chart-panel { grid-column: 1 / -1; grid-row: 4; align-self: stretch; }.text-link { display: flex; align-items: center; gap: 5px; color: #7299d2; font-size: 11px; }.text-link:hover { color: #4d83e8; }
 .chart-meta { display: flex; align-items: center; justify-content: space-between; padding: 0 20px; }.chart-meta>span { color: #64748b; font-size: 11px; }.metric-tabs { display: flex; gap: 4px; }.metric-tabs button { padding: 6px 14px; border-radius: 16px; background: #f4f7fc; color: #64748b; border: 0; font-size: 11px; }.metric-tabs button.active { color: white; background: #5b8bea; box-shadow: 0 2px 5px #4d83e81c; }.chart-container { padding: 17px 20px 13px; }.chart-container :deep(.trend-chart-wrap) { min-height: 240px; }

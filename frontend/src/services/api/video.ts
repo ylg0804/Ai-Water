@@ -3,6 +3,9 @@ import { apiBlob, apiRequest, type ApiRequest, type BlobRequest } from './client
 import { asRecord } from './contract'
 
 export interface PlayAddress { url: string; expireSeconds: number; quality: 'hd' | 'sd'; protocol: 'hls' }
+export async function reportPlayback(device: Device, viewerId: string, version: number, ready: boolean): Promise<void> {
+  await apiRequest('/api/ezviz/playback', { method: 'POST', body: JSON.stringify({ serial: device.serial, viewerId, version, ready }), keepalive: !ready })
+}
 function videoError(message: string): Error { return new Error(message) }
 
 export async function getPlayAddress(device: Device, signal?: AbortSignal, request: ApiRequest = apiRequest, pageProtocol = typeof location === 'undefined' ? 'http:' : location.protocol): Promise<PlayAddress> {

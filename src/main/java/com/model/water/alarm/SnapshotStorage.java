@@ -28,7 +28,19 @@ public class SnapshotStorage {
                 .format(Instant.now()).replace(':', '-') + ".jpg";
         Path target = root.resolve(filename).normalize();
         if (!target.startsWith(root)) throw new IOException("截图路径非法");
-        if (!ImageIO.write(image, "jpg", target.toFile())) throw new IOException("JPEG 编码失败");
+        try {
+            if (!ImageIO.write(image, "jpg", target.toFile())) throw new IOException("JPEG 编码失败");
+        } catch (IOException | RuntimeException e) {
+            try { Files.deleteIfExists(target); } catch (IOException cleanup) { e.addSuppressed(cleanup); }
+            throw e;
+        }
         return root.relativize(target).toString().replace('\\', '/');
+    }
+
+    /** Only freshly created, unreferenced images are passed by the transaction cleanup. */
+    public void deleteCreated(String relative) throws IOException {
+        Path file = root.resolve(relative).normalize();
+        if (!file.startsWith(root) || file.equals(root)) throw new IOException("截图清理路径非法");
+        Files.deleteIfExists(file);
     }
 }

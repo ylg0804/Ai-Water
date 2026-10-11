@@ -18,6 +18,17 @@ function windowFixture() {
 }
 
 describe('session boundary', () => {
+  it('revokes the server session before clearing the local token and stays logged out when revoke fails', async () => {
+    const revokeSession = vi.fn().mockRejectedValue(new Error('offline'))
+    const current = createSession({ storage: new MemoryStorage(), loginRequest: vi.fn().mockResolvedValue({ token: 'token', username: 'admin' }), windowTarget: windowFixture(), revokeSession })
+    await current.login('admin', 'pass')
+    current.logout()
+    await Promise.resolve()
+    expect(revokeSession).toHaveBeenCalledTimes(1)
+    expect(current.state.user).toBeNull()
+    current.dispose()
+  })
+
   it('trims the username but sends the password unchanged', async () => {
     const storage = new MemoryStorage()
     const windowTarget = windowFixture()

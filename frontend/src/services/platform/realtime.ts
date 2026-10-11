@@ -45,7 +45,12 @@ export function createRealtimeChannel(options: RealtimeOptions): RealtimeChannel
         current.onopen = () => { if (valid()) { clearConnectTimer(); options.onState('connected') } }
         current.onmessage = event => { if (valid()) options.onMessage(String(event.data)) }
         current.onerror = () => { if (valid()) { release(true); options.onState('polling') } }
-        current.onclose = () => { if (valid()) { release(false); options.onState('polling') } }
+        current.onclose = event => {
+          if (!valid()) return
+          release(false)
+          options.onState('polling')
+          if (event.code === 4401 && typeof window !== 'undefined') window.dispatchEvent(new Event('water:unauthorized'))
+        }
         connectTimer = setTimeout(() => { if (valid()) { release(true); options.onState('polling') } }, 15_000)
       } catch { release(true); options.onState('polling') }
     },

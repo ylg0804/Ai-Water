@@ -8,6 +8,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 
 import javax.imageio.ImageIO;
 import java.io.ByteArrayOutputStream;
@@ -34,6 +36,13 @@ public class EzvizController {
     public Map<String, Object> latest(@RequestParam String serial) {
         return scheduler.latest(serial);
     }
+
+    @PostMapping("/playback")
+    public Map<String, Object> playback(@RequestBody PlaybackRequest request) {
+        scheduler.playback(request.serial(), request.viewerId(), request.version(), request.ready());
+        return Map.of("code", "200", "msg", "ok");
+    }
+    public record PlaybackRequest(String serial, String viewerId, long version, boolean ready) {}
 
     /** 已接入的摄像头列表。 */
     @GetMapping("/devices")

@@ -14,7 +14,18 @@ try {
         $javaExecutable = Join-Path $env:JAVA_HOME 'bin/java.exe'
     } else {
         $javaExecutable = (Get-Command java.exe -ErrorAction Stop).Source
-        $env:JAVA_HOME = Split-Path -Parent (Split-Path -Parent $javaExecutable)
+        $javaProbe = [System.Diagnostics.Process]::new()
+        $javaProbe.StartInfo.FileName = $javaExecutable
+        $javaProbe.StartInfo.Arguments = '-XshowSettings:properties -version'
+        $javaProbe.StartInfo.UseShellExecute = $false
+        $javaProbe.StartInfo.CreateNoWindow = $true
+        $javaProbe.StartInfo.RedirectStandardError = $true
+        [void]$javaProbe.Start()
+        $javaSettings = $javaProbe.StandardError.ReadToEnd() -split "`n"
+        $javaProbe.WaitForExit()
+        $javaProbe.Dispose()
+        $javaHomeSetting = $javaSettings | Where-Object { $_ -match '^\s*java.home\s*=' } | Select-Object -First 1
+        if ($javaHomeSetting) { $env:JAVA_HOME = ($javaHomeSetting -split '=', 2)[1].Trim() }
     }
     $javaVersionLines = @(& $javaExecutable --version)
     $javaVersion = $javaVersionLines[0]
@@ -26,7 +37,9 @@ try {
     try {
         if (-not $SkipBuild) {
             $mavenCommand = Get-Command mvn.cmd -ErrorAction SilentlyContinue
-            $mavenExecutable = if ($mavenCommand) { $mavenCommand.Source } else { Join-Path $projectDirectory 'mvnw.cmd' }
+            $cachedMaven = Get-ChildItem -LiteralPath (Join-Path $env:USERPROFILE '.m2/wrapper/dists') -Filter 'mvn.cmd' -File -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+            $mavenExecutable = if ($mavenCommand) { $mavenCommand.Source } elseif ($cachedMaven) { $cachedMaven.FullName } else { Join-Path $projectDirectory 'mvnw.cmd' }
+            $env:MAVEN_OPTS = "$env:MAVEN_OPTS -Dfile.encoding=UTF-8".Trim()
             & $mavenExecutable '-DskipTests' 'package'
             if ($LASTEXITCODE -ne 0) { throw 'Backend build failed. See Maven output above.' }
         }
@@ -37,7 +50,7 @@ try {
         Write-Host 'Backend: http://127.0.0.1:8080 (unless overridden in local configuration)'
         Write-Host 'Using frontend/.backend.local.properties. Keep this window open; Ctrl+C stops the backend.'
         $configUri = ([System.Uri]$localConfig).AbsoluteUri
-        & $javaExecutable '-jar' $backendJar "--spring.config.additional-location=$configUri"
+        & $javaExecutable '-Dfile.encoding=UTF-8' '-jar' $backendJar "--spring.config.additional-location=$configUri"
         if ($LASTEXITCODE -ne 0) { throw 'Backend stopped with an error. Check the log above.' }
     } finally {
         Pop-Location

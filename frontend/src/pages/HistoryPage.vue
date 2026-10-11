@@ -1,12 +1,31 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { ArrowDownToLine, CalendarDays, Info, Search, SlidersHorizontal } from '@lucide/vue'
 import TrendChart from '../components/TrendChart.vue'
 import { useHistoryQuery } from '../composables/useHistoryQuery'
 import { platform } from '../services/platform/store'
 import { formatDate, formatNumber, metricMeta } from '../utils/format'
+import { listDevices } from '../services/api/devices'
+import { listDeviceHistory } from '../services/api/measurements'
+import type { Device, Measurement } from '../domain/models'
 
-const history = useHistoryQuery({ devices: computed(() => platform.state.devices) })
+const catalog = ref<Device[]>([])
+const history = useHistoryQuery({ devices: computed(() => catalog.value.length ? catalog.value : platform.state.devices),
+  history: async (filter, signal) => {
+    const devices = await listDevices(undefined, true)
+    if (signal?.aborted) throw new Error('查询已取消')
+    catalog.value = devices.map(device => device.archived ? { ...device, name: `${device.name || device.serial}（已归档）` } : device)
+    const selected = filter.deviceId ? catalog.value.filter(device => device.id === filter.deviceId) : catalog.value
+    if (filter.deviceId && !selected.length) throw new Error('监测设备不存在，请重新选择。')
+    const result: Measurement[] = []
+    for (let i = 0; i < selected.length; i += 4) {
+      if (signal?.aborted) throw new Error('查询已取消')
+      const rows = await Promise.all(selected.slice(i, i + 4).map(device => listDeviceHistory(device, { ...filter, deviceId: device.id }, undefined, signal)))
+      result.push(...rows.flat())
+    }
+    return result
+  },
+})
 const { deviceId, dateRange, applied, rows, metric, currentPage, pageSize, loading, exporting, error, deviceOptions, hasUnappliedChanges, pagedRows, reportedValues, metricAverage, emptyDescription, query, reset, exportRows, shortcuts } = history
 const resultCount = computed(() => loading.value || (Boolean(error.value) && !rows.value.length) ? '—' : rows.value.length.toLocaleString('zh-CN'))
 onBeforeUnmount(history.dispose)

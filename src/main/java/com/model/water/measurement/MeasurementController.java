@@ -14,6 +14,8 @@ import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.math.BigDecimal;
+import org.springframework.format.annotation.DateTimeFormat;
 
 @RestController
 @RequestMapping("/api/measurement")
@@ -32,8 +34,8 @@ public class MeasurementController {
     @GetMapping("/history")
     public Map<String, Object> history(@RequestParam(required = false) Long deviceId,
                                        @RequestParam(required = false) String serial,
-                                       @RequestParam LocalDateTime start,
-                                       @RequestParam LocalDateTime end) {
+                                       @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime start,
+                                       @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime end) {
         if (!end.isAfter(start)) throw new IllegalArgumentException("end 必须晚于 start");
         if (deviceId == null && (serial == null || serial.isBlank())) throw new IllegalArgumentException("必须提供 deviceId 或 serial");
         return ok(deviceId != null ? repository.history(deviceId, start, end) : repository.history(serial, start, end));
@@ -42,8 +44,8 @@ public class MeasurementController {
     @GetMapping(value = "/export", produces = "text/csv")
     public ResponseEntity<byte[]> export(@RequestParam(required = false) Long deviceId,
                                          @RequestParam(required = false) String serial,
-                                         @RequestParam LocalDateTime start,
-                                         @RequestParam LocalDateTime end) {
+                                         @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime start,
+                                         @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime end) {
         if (!end.isAfter(start)) throw new IllegalArgumentException("end 必须晚于 start");
         if (deviceId == null && (serial == null || serial.isBlank())) throw new IllegalArgumentException("必须提供 deviceId 或 serial");
         List<Map<String, Object>> rows = deviceId != null ? repository.history(deviceId, start, end) : repository.history(serial, start, end);
@@ -52,9 +54,9 @@ public class MeasurementController {
         for (Map<String, Object> row : rows) {
             csv.append(csvCell(row.get("serial"))).append(',')
                     .append(csvCell(row.get("measured_at"))).append(',')
-                    .append(csvCell(row.get("water_level"))).append(',')
-                    .append(csvCell(row.get("velocity"))).append(',')
-                    .append(csvCell(row.get("discharge"))).append("\r\n");
+                    .append(decimalCell(row.get("water_level"))).append(',')
+                    .append(decimalCell(row.get("velocity"))).append(',')
+                    .append(decimalCell(row.get("discharge"))).append("\r\n");
         }
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(new MediaType("text", "csv", StandardCharsets.UTF_8));
@@ -72,5 +74,9 @@ public class MeasurementController {
     private static String csvCell(Object value) {
         String text = value == null ? "" : String.valueOf(value);
         return "\"" + text.replace("\"", "\"\"") + "\"";
+    }
+    private static String decimalCell(Object value) {
+        if (value == null) return csvCell(null);
+        return csvCell(new BigDecimal(value.toString()).stripTrailingZeros().toPlainString());
     }
 }

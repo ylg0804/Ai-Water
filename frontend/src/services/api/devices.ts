@@ -46,11 +46,12 @@ export function mapDevice(value: unknown): Device {
     status: binaryOrDefault(row.status, 1, '设备状态格式异常。'),
     online: null,
     createdAt: parseServerDate(row.created_at),
+    ...(row.deleted_at != null ? { archived: true } : {}),
   }
 }
 
-export async function listDevices(request: ApiRequest = apiRequest): Promise<Device[]> {
-  return asList(await request('/api/device')).map(mapDevice)
+export async function listDevices(request: ApiRequest = apiRequest, includeDeleted = false): Promise<Device[]> {
+  return asList(await request(includeDeleted ? '/api/device?includeDeleted=true' : '/api/device')).map(mapDevice)
 }
 
 export function normalizeDeviceDraft(draft: DeviceDraft, existing: Device[], id?: string): DeviceDraft {

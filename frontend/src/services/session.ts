@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import { type LoginCredentials, login, type LoginResponse } from './api/auth'
+import { type LoginCredentials, login, logout as logoutRequest, type LoginResponse } from './api/auth'
 import { sessionKey, setSessionToken } from './api/client'
 
 interface User {
@@ -14,6 +14,7 @@ export interface SessionOptions {
   storage: Storage
   loginRequest: LoginRequest
   windowTarget: SessionWindow
+  revokeSession?: () => Promise<void>
 }
 
 function validSession(value: unknown): value is LoginResponse {
@@ -32,7 +33,7 @@ function savedSession(storage: Storage): LoginResponse | null {
   }
 }
 
-export function createSession({ storage, loginRequest, windowTarget }: SessionOptions) {
+export function createSession({ storage, loginRequest, windowTarget, revokeSession }: SessionOptions) {
   const saved = savedSession(storage)
   setSessionToken(saved?.token ?? '')
   const state = reactive<{ user: User | null }>({
@@ -40,6 +41,7 @@ export function createSession({ storage, loginRequest, windowTarget }: SessionOp
   })
 
   const logout = () => {
+    if (state.user && revokeSession) void revokeSession().catch(() => {})
     state.user = null
     setSessionToken('')
     try { storage.removeItem(sessionKey) } catch { /* The active session has already been cleared. */ }
@@ -79,6 +81,6 @@ const emptyStorage: Storage = {
 const storage = typeof sessionStorage === 'undefined' ? emptyStorage : sessionStorage
 const windowTarget: SessionWindow = typeof window === 'undefined' ? new EventTarget() : window
 
-export const session = createSession({ storage, loginRequest: login, windowTarget })
+export const session = createSession({ storage, loginRequest: login, windowTarget, revokeSession: logoutRequest })
 
 import.meta.hot?.dispose(() => session.dispose())

@@ -30,6 +30,40 @@ function fixture() {
 afterEach(() => vi.useRealTimers())
 
 describe('platform store', () => {
+  it('ignores an old HTTP failure after a newer runtime event with the same last success', async () => {
+    const gateway: PlatformGateway = fixture(), api = createPlatform({ gateway, clock: now })
+    await api.refreshMeasurements()
+    const pending = deferred<RuntimeStatus>()
+    gateway.getRuntimeStatus = vi.fn(() => pending.promise)
+    const refreshing = api.refreshMeasurements()
+    await vi.waitFor(() => expect(gateway.getRuntimeStatus).toHaveBeenCalledOnce())
+    const runtime = { lastSuccess: '2026-09-09T02:00:00Z', runtimeEpoch: '2026-09-09T01:00:00Z', runtimeVersion: 5,
+      error: 'new failure', failureCount: 5, consecutiveFailures: 5, lastFailureAt: '2026-09-09T02:00:25Z', lastFailureReason: 'new failure' }
+    api.receiveRealtime(JSON.stringify({ type: 'runtime', serial: 'CAM1', data: runtime }))
+    pending.resolve({ ...runtime, measurement: null, runtimeVersion: 4, failureCount: 4, lastFailureAt: '2026-09-09T02:00:20Z', lastFailureReason: 'old failure' })
+    await refreshing
+    expect(api.state.devices[0]).toMatchObject({ failureCount: 5, runtimeVersion: 5, lastFailureReason: 'new failure' })
+    api.receiveRealtime(JSON.stringify({ type: 'runtime', serial: 'CAM1', data: { ...runtime, runtimeVersion: 4, failureCount: 4 } }))
+    expect(api.state.devices[0].failureCount).toBe(5)
+    api.receiveRealtime(JSON.stringify({ type: 'runtime', serial: 'CAM1', data: { ...runtime,
+      runtimeEpoch: '2026-09-09T02:00:26Z', runtimeVersion: 1, lastSuccess: null, failureCount: 1, consecutiveFailures: 1 } }))
+    expect(api.state.devices[0]).toMatchObject({ failureCount: 1, lastSuccess: null, runtimeVersion: 1 })
+  })
+  it('receives failure counters and recovery through realtime runtime events', async () => {
+    const api = createPlatform({ gateway: fixture(), clock: now })
+    await api.refreshMeasurements()
+    api.receiveRealtime(JSON.stringify({ type: 'runtime', serial: 'CAM1', data: {
+      lastSuccess: '2026-09-09T02:00:00Z', error: '视频源无效', failureCount: 4, consecutiveFailures: 2,
+      lastFailureAt: '2026-09-09T02:00:25Z', lastFailureReason: '错误画面',
+    } }))
+    expect(api.state.devices[0]).toMatchObject({ failureCount: 4, consecutiveFailures: 2, lastFailureReason: '错误画面' })
+    expect(api.state.devices[0].runtimeError).toBeTruthy()
+    api.receiveRealtime(JSON.stringify({ type: 'runtime', serial: 'CAM1', data: {
+      lastSuccess: '2026-09-09T02:00:30Z', error: null, failureCount: 4, consecutiveFailures: 0,
+      lastFailureAt: '2026-09-09T02:00:25Z', lastFailureReason: '错误画面',
+    } }))
+    expect(api.state.devices[0]).toMatchObject({ failureCount: 4, consecutiveFailures: 0, runtimeError: '', online: true })
+  })
   it('starts empty and reports a device-list failure without inventing data', async () => {
     const gateway = fixture(), api = createPlatform({ gateway })
     expect([api.state.devices, api.state.measurements, api.state.alarms]).toEqual([[], [], []])

@@ -82,6 +82,13 @@ public class WaterflowOnnxService {
         session.close();
     }
 
+    @jakarta.annotation.PostConstruct
+    void validateConfiguration() {
+        new WaterflowMedianSmoother(smoothingWindowSize);
+        inferIntervalSeconds();
+        if (classCount < 3) throw new IllegalArgumentException("水情模型至少需要三个输出类别");
+    }
+
     /** 创建一台设备专用的结果平滑器；调度层应为每台设备分别持有。 */
     public WaterflowMedianSmoother newMedianSmoother() {
         return new WaterflowMedianSmoother(smoothingWindowSize);
